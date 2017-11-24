@@ -7,3 +7,5 @@ scrape.py uses the python beautiful soup package to
 3) Download the page as HTML
 4) Extract the 10 Job postings from this HTML
 5) Print out the linkid, webaddress, jobtitle, and companyname
+
+page.html is a sample html file for testing.  This is from an Indeed querry for Data Scientist, St Paul MN

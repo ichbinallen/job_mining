@@ -1,117 +1,166 @@
 # Allen Clark
 # scrape.py performs the following:
 # 1) Visit Indeed.com
-# 2) Queries for a job title and location (loc = city + State)
-# 3) Donwloads an html file containing the job posting
-# 4) Converts the HTML page to json
-# 5) Extracts the json elements containing text relevent to the job posting
-# 6) Saves the relevent text in a .txt file
+# 2) Queries for a job title and location (loc = city + state)
+# 3) Turns this html into an IndeedQuery Object
+# 4) IndeedQuery scrape method gets metadata from indeedpage
+# 5) IndeedQuery get_job_desc method gets job posting text
+# 6) IndeedQuery keep_jobs method deletes a job if we couldn't scrape the job
+# desc from the job posting website
+#
+# Options:
+# can save or load queries as .pk pickle objects for faster testing
+#
+# TODO:
+# inefficient to read url twice, once in scrape, once in get_job_desc
+# Test on variety of sites
+# Store in database
 
 # Load Modules
-import argparse
 import urllib2
-import os
 from bs4 import BeautifulSoup
+from bs4 import Comment
+import cPickle as pickle
 
 
 # Defined Functions
-def get_webaddress(jobtitle, city, state):
-    """Turns a jobtitle and location into an indeed query url"""
-    base = 'https://www.indeed.com/jobs?q={}&l={}%2C+{}'
-    jobtitle = jobtitle.replace(' ', '+')
-    city = city.replace(' ', '+')
-    webaddress = base.format(jobtitle, city, state)
-    return webaddress
+def tag_visible(element):
+    """Helper function to strip non-text html"""
+    if element.parent.name in ['style', 'script', 'head', 'title',
+                               'meta', '[document]']:
+        return False
+    if isinstance(element, Comment):
+        return False
+    return True
 
 
-def get_html(url):
-    """given a url, fetches the html and returns as a string"""
-    response = urllib2.urlopen(url)
-    html = response.read()
-    return html
+class IndeedQuery:
+    """An IndeedQuery objects represents the jobs postings found on Indeed.com
+    after searching for a specific query and location"""
+    def __init__(self, query_term, query_city, query_state):
+        """ Constructor for an indeed query object"""
+        self.query_term = query_term
+        self.query_city = query_city
+        self.query_state = query_state
+        base = 'https://www.indeed.com/jobs?q={}&l={}%2C+{}'
+        j = query_term.replace(' ', '+')
+        c = query_city.replace(' ', '+')
+        self.url = base.format(j, c, query_state)
+        self.jobs = []
+        self.job_desc = "unknown"
 
+    def scrape(self):
+        response = urllib2.urlopen(self.url)
+        html = response.read()
+        soup = BeautifulSoup(html, "lxml")
+        postings = soup.find_all('div', {'class': '  row  result'})
+        self.jobs = [None] * len(postings)
+        for (index, job) in enumerate(postings):
+            h2_elem = job.h2
+            job_id = h2_elem['id']
+            job_href = h2_elem.a['href']
+            if "indeed.com/" not in job_href:
+                job_href = "https://www.indeed.com" + job_href
+            try:
+                response = urllib2.urlopen(job_href)
+                job_href = response.geturl()
+            except urllib2.URLError:
+                pass
+            if 'indeed.com/cmp/' in job_href:
+                job_source = 'internal'
+            else:
+                job_source = 'external'
+            job_title = h2_elem.a['title']
+            try:
+                job_company = job.span.a.string.strip()
+            except AttributeError:
+                job_company = job.span.string.strip()
+            self.jobs[index] = {'id': job_id, 'url': job_href,
+                                'job_title': job_title, 'company': job_company,
+                                'source': job_source}
 
-def get_row_result_data(row_result):
-    """Extracts job_id, link, jobtitle, and company from indeed's query page"""
-    h2element = row_result.h2
-    job_id = h2element['id']
-    job_href = h2element.a['href']
-    if "indeed.com/" not in job_href:
-        job_href = "https://www.indeed.com" + job_href
-    job_title = h2element.a['title']
-    try:
-        job_company = row_result.span.a.string.strip()
-    except AttributeError:
-        job_company = row_result.span.string.strip()
-    return (job_id, job_href, job_title, job_company)
+    def get_job_desc(self):
+        """Scrapes the job posting text"""
+        for job in self.jobs:
+            print job['company']
+            try:
+                response = urllib2.urlopen(job['url'])
+                html = response.read()
+                soup = BeautifulSoup(html, "lxml")
+            except urllib2.URLError:
+                job['job_desc'] = "NA"
+                continue  # cant read html, go to next job posting
+            if job['source'] == "internal":
+                job_desc = soup.find('span', {'id': 'job_summary'})
+                job_desc = job_desc.get_text()
+            else:
+                job_desc = soup.find_all(text=True)
+                visible_texts = filter(tag_visible, job_desc)
+                job_desc = u" ".join(t.strip() for t in visible_texts)
+            if job_desc.isspace():
+                job_desc = "NA"
+            job['job_desc'] = job_desc.encode('ascii', 'ignore')
 
+    def keep_jobs(self):
+        """Remove jobs without any job description"""
+        self.jobs = filter(lambda x: x['job_desc'] != "NA", self.jobs)
 
-def save_indeed_query(jobtitle, city, state):
-    """ Saves indeed query page as a .html file. Only works on linux rn
-    Usefull for testing with a specific .html page"""
-    url = get_webaddress(jobtitle, city, state)
-    oscommand = 'wget -O static.html"{}"'.format(url)
-    os.system(oscommand)
+    def save_query(self, filename):
+        with open(filename, 'wb') as outfile:
+            pickle.dump(self, outfile, pickle.HIGHEST_PROTOCOL)
 
+    @staticmethod
+    def load_query(filename):
+        with open(filename, 'rb') as infile:
+            return pickle.load(infile)
 
-def scrape_query_page(html):
-    """Extracts data from job postings on indeed query page"""
-    soup = BeautifulSoup(html, "lxml")
-    postings = soup.find_all('div', {'class': '  row  result'})
-    post_data = [None] * len(postings)
-    for (i, p) in enumerate(postings):
-        post_data[i] = get_row_result_data(p)
-    return post_data
-
-
-def scrape_job_post(url):
-    """ Extracts text from job posting"""
-    html = get_html(url)
-    soup = BeautifulSoup(html, "lxml")
-    if "indeed.com/company/" in url:  # internal (indeed) link
-        job_desc = soup.find('span', {'id': 'job_summary'})
-    else:  # external (not indeed) link
-        job_desc = soup
-    print job_desc.get_text()
+    def to_string(self):
+        """ Should replace with __str__"""
+        query_string = "Query: {}, {}, {}"
+        query_string = query_string.format(self.query_term,
+                                           self.query_city,
+                                           self.query_state)
+        print query_string
+        print self.url
+        print ""
+        for job in self.jobs:
+            for k, v in job.iteritems():
+                print k, v
+            print ""
+        print ""
 
 
 # Main Function
 def main():
-    # my code here
-    # parser=argparse.ArgumentParser(description='parse job, city, state args')
-    # parser.add_argument('jobtitle', type=str,
-    #                     help='enter the jobtitle to search for on Indeed')
-    # parser.add_argument('city', type=str,
-    #                     help='enter the city to search for on Indeed')
-    # parser.add_argument('state', type=str,
-    #                     help='enter the state to search for on Indeed')
+    DS_NY = IndeedQuery("Data Scientist", "New York", "NY")
+    DS_NY.scrape()
+    DS_NY.get_job_desc()
+    DS_NY.keep_jobs()
+    DS_NY.to_string()
 
-    # args = parser.parse_args()
+    # DS_LA = IndeedQuery("Data Scientist", "Los Angeles", "CA")
+    # DS_LA.scrape()
+    # DS_LA.get_job_desc()
+    # DS_LA.keep_jobs()
+    # DS_LA.to_string()
 
-    # query indeed for ds html page.  Takes a while so commented out
-    # save_indeed_query("IT Manager", "Saint Paul", "MN")
+    # DS_Chicago = IndeedQuery("Data Scientist", "Chicago", "IL")
+    # DS_Chicago.scrape()
+    # DS_Chicago.get_job_desc()
+    # DS_Chicago.keep_jobs()
+    # DS_Chicago.to_string()
 
-    # STATIC PAGE from .html file on computer
-    with open('ITManagerLA.html', 'r') as fp:
-        html = fp.read()
-    IT_Manager_jobs = scrape_query_page(html)
+    # DS_Houston = IndeedQuery("Data Scientist", "Houston", "TX")
+    # DS_Houston.scrape()
+    # DS_Houston.get_job_desc()
+    # DS_Houston.keep_jobs()
+    # DS_Houston.to_string()
 
-    # FRESH PAGE from the web
-    # url = get_webaddress("Data Scientist", "Seattle", "WA")
-    # query_page_html = get_html(url)
-    # Seattle_DS_Jobs = scrape_query_page(query_page_html)
-
-    for job in IT_Manager_jobs:
-        if "indeed.com/company/" in job[1]:
-            print "internal job"
-            for var in job:
-                print var
-        else:
-            print "external job"
-            for var in job:
-                print var
-        print ""
-
+    # DS_Phoenix = IndeedQuery("Data Scientist", "Phoenix", "AZ")
+    # DS_Phoenix.scrape()
+    # DS_Phoenix.get_job_desc()
+    # DS_Phoenix.keep_jobs()
+    # DS_Phoenix.to_string()
 
 if __name__ == "__main__":
     main()

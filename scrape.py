@@ -7,13 +7,15 @@
 # 5) IndeedQuery get_job_desc method gets job posting text
 # 6) IndeedQuery keep_jobs method deletes a job if we couldn't scrape the job
 # desc from the job posting website
+# 7) IndeedQuery to_db() puts the records in the webscrape postgres database
+# 8) Main method searches for all combinations of query_terms and cities
 #
 # Options:
-# can save or load queries as .pk pickle objects for faster testing
+# add query terms by inserting into searchterms table in webscrape db
+# save or load queries as .pk pickle objects for faster testing
 #
 # TODO: priority high to low
-# run all the queries in the crossprod view
-# inefficient to read url twice, once in scrape, once in get_job_desc
+# Make all exceptions more robust
 # make to_db method more robust, exceptions for internet access, ???
 # replace to_string with __str__ or __repr__ method
 # convert everything scraped to ascii? or handle in data analysis?
@@ -58,37 +60,37 @@ class IndeedQuery:
     def scrape(self):
         """ Collects metadata from indeed query page """
         logging.info("Attempting to scrape Indeed query page")
-        response = urllib2.urlopen(self.url)
-        html = response.read()
-        soup = BeautifulSoup(html, "lxml")
-        postings = soup.find_all('div', {'class': '  row  result'})
-        self.jobs = [None] * len(postings)
+        try:
+            response = urllib2.urlopen(self.url)
+            html = response.read()
+            soup = BeautifulSoup(html, "lxml")
+            postings = soup.find_all('div', {'class': '  row  result'})
+            self.jobs = [None] * len(postings)
+            logging.info("turned html into soup")
+        except:
+            logging.error("Cannot read html from indeed")
+            return
         for (index, job) in enumerate(postings):
             h2_elem = job.h2
             job_href = h2_elem.a['href']
             if "indeed.com/" not in job_href:
                 job_href = "https://www.indeed.com" + job_href
-            try:
-                response = urllib2.urlopen(job_href)
-                job_href = response.geturl()
-            except urllib2.URLError:
-                pass
-            if 'indeed.com/cmp/' in job_href:
-                job_source = 'internal'
-            else:
-                job_source = 'external'
             job_title = h2_elem.a['title']
+            logging.info("Fine till here")
             try:
-                job_company = job.span.a.string.strip()
-            except AttributeError:
-                job_company = job.span.string.strip()
+                try:
+                    job_company = job.span.a.string.strip()
+                except AttributeError:
+                    job_company = job.span.string.strip()
+            except:
+                job_company = "NA"
             now = datetime.datetime.now()
             now = now.strftime("%Y-%m-%d")
             self.jobs[index] = {'query_term': self.query_term,
                                 'query_city': self.query_city,
                                 'query_state': self.query_state,
                                 'job_url': job_href,
-                                'job_source': job_source,
+                                'job_source': 'external',
                                 'job_title': job_title,
                                 'job_company': job_company,
                                 'job_desc': "NA",
@@ -101,6 +103,9 @@ class IndeedQuery:
         for job in self.jobs:
             try:
                 response = urllib2.urlopen(job['job_url'])
+                job['job_url'] = response.geturl()
+                if 'indeed.com/cmp/' in job['job_url']:
+                    job['job_source'] = 'internal'
                 html = response.read()
                 soup = BeautifulSoup(html, "lxml")
                 logging.info("Beautiful soup created for %s at  %s",
@@ -144,7 +149,8 @@ class IndeedQuery:
             cur = conn.cursor()
             logging.info("Successfully connected to webscrape DB")
         except:
-            logging.info("Cannot connect to webscrape DB")
+            logging.error("Cannot connect to webscrape DB")
+            return
         SQL = """INSERT INTO
             jobpostings (query_term, query_city, query_state,
                          job_url, job_source, job_title,
@@ -195,36 +201,18 @@ def main():
                         format='%(asctime)s %(message)s',
                         datefmt='%m/%d/%Y %I:%M:%S %p',
                         level=logging.INFO)
-    # These records are already in the db, should be skipped
-    # DS_NY = IndeedQuery("Data Scientist", "New York", "NY")
-    # DS_NY.scrape()
-    # DS_NY.get_job_desc()
-    # DS_NY.keep_jobs()
-    # DS_NY.save_query("DS_NY.pk")
-    # DS_NY.to_db()
 
-    # These are new records.  Should be INSERTED INTO jobpostings Table
-    # DS_Denver = IndeedQuery("Data Scientist", "Denver", "CO")
-    # DS_Denver.scrape()
-    # DS_Denver.get_job_desc()
-    # DS_Denver.keep_jobs()
-    # DS_Denver.save_query("DS_Denver.pk")
-    # DS_Denver.to_db()
-
-    # DS_DC = IndeedQuery("Data Scientist", "Washington", "DC")
-    # DS_DC.scrape()
-    # DS_DC.get_job_desc()
-    # DS_DC.keep_jobs()
-    # DS_DC.save_query("DS_DC.pk")
-    # DS_DC.to_db()
-
-    # Cyber_NY = IndeedQuery("Cyber Security", "New York", "NY")
-    # Cyber_NY.scrape()
-    # Cyber_NY.get_job_desc()
-    # Cyber_NY.keep_jobs()
-    # Cyber_NY.save_query("Cyber_NY.pk")
-    Cyber_NY = IndeedQuery.load_query("Cyber_NY.pk")
-    Cyber_NY.to_db()
+    con_str = "dbname='webscrape' user='allen'"
+    conn = psycopg2.connect(con_str)
+    cur = conn.cursor()
+    cur.execute("""SELECT query_term, city, state FROM searches""")
+    rows = cur.fetchall()
+    for r in rows:
+        row_Query = IndeedQuery(r[0], r[1], r[2])
+        row_Query.scrape()
+        row_Query.get_job_desc()
+        row_Query.keep_jobs()
+        row_Query.to_db()
 
     logging.info("python script scrape.py completed successfully")
 

@@ -1,4 +1,10 @@
 Data Scientist
+Statistician
+Machine Learning
+Business Intelligence
 Mechanical Engineer
+R&D Engineer
+Materials Engineer
 Cyber Security
-Real Estate Agent
+Database Administrator
+Systems Administrator

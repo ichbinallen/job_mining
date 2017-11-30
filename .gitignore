@@ -1,0 +1,6 @@
+# ignore the log file
+*.log
+
+# Also ignore all the junk in the ./old/ directory
+old
+old/*

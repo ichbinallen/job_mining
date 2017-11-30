@@ -21,11 +21,11 @@
 # convert everything scraped to ascii? or handle in data analysis?
 
 # Load Modules
-import urllib2  # retrieve html
-import psycopg2  # postgresql database api
+import urllib3  # retrieve html
+# import psycopg2  # postgresql database api
 from bs4 import BeautifulSoup  # parse html
 from bs4 import Comment  # parse html
-import cPickle as pickle  # save queries to file
+import pickle  # save queries to file
 import datetime  # get date query was performed
 import logging  # write script progress to logfile.log
 
@@ -61,8 +61,9 @@ class IndeedQuery:
         """ Collects metadata from indeed query page """
         logging.info("Attempting to scrape Indeed query page")
         try:
-            response = urllib2.urlopen(self.url)
-            html = response.read()
+            pool_mgr = urllib3.PoolManager()
+            response = pool_mgr.request('GET', self.url)
+            html = response.data.decode('utf-8')
             soup = BeautifulSoup(html, "lxml")
             postings = soup.find_all('div', {'class': '  row  result'})
             self.jobs = [None] * len(postings)
@@ -76,7 +77,6 @@ class IndeedQuery:
             if "indeed.com/" not in job_href:
                 job_href = "https://www.indeed.com" + job_href
             job_title = h2_elem.a['title']
-            logging.info("Fine till here")
             try:
                 try:
                     job_company = job.span.a.string.strip()
@@ -95,6 +95,7 @@ class IndeedQuery:
                                 'job_company': job_company,
                                 'job_desc': "NA",
                                 'date': now}
+        logging.info("%s", self.to_string())
         logging.info("Successfully scraped indeed query page")
 
     def get_job_desc(self):
@@ -102,15 +103,17 @@ class IndeedQuery:
         logging.info("Looking for job description text")
         for job in self.jobs:
             try:
-                response = urllib2.urlopen(job['job_url'])
-                job['job_url'] = response.geturl()
-                if 'indeed.com/cmp/' in job['job_url']:
-                    job['job_source'] = 'internal'
-                html = response.read()
+                pool_mgr = urllib3.PoolManager()
+                response = pool_mgr.request('GET', job['job_url'])
+                html = response.data.decode('utf-8')
                 soup = BeautifulSoup(html, "lxml")
+                # job['job_url'] = response.geturl() need to fix for python3
+                # if 'indeed.com/cmp/' in job['job_url']:
+                #     job['job_source'] = 'internal'
                 logging.info("Beautiful soup created for %s at  %s",
                              job['job_title'], job['job_company'])
-            except urllib2.URLError:
+            except Exception as e:
+                logging.warning("%s", e)
                 job['job_desc'] = "NA"
                 logging.info("Beautiful soup failed for %s at  %s",
                              job['job_title'], job['job_company'])
@@ -142,44 +145,6 @@ class IndeedQuery:
         with open(filename, 'rb') as infile:
             return pickle.load(infile)
 
-    def to_db(self):
-        con_str = "dbname='webscrape' user='allen'"
-        try:
-            conn = psycopg2.connect(con_str)
-            cur = conn.cursor()
-            logging.info("Successfully connected to webscrape DB")
-        except:
-            logging.error("Cannot connect to webscrape DB")
-            return
-        SQL = """INSERT INTO
-            jobpostings (query_term, query_city, query_state,
-                         job_url, job_source, job_title,
-                         job_company, job_desc, date)
-            VALUES (%(query_term)s, %(query_city)s, %(query_state)s,
-                    %(job_url)s, %(job_source)s, %(job_title)s,
-                    %(job_company)s, %(job_desc)s, %(date)s);
-              """
-        for job in self.jobs:
-            try:
-                logging.info("Attempting insert of %s, %s record into DB",
-                             job['job_company'], job['job_title'])
-                cur.execute(SQL, job)
-                conn.commit()
-                logging.info('successfully inserted record')
-            except psycopg2.ProgrammingError:
-                logging.warning("cannot access jobpostings table.")
-                logging.warning("Did you forget \i create_jobpostings.sql?")
-                continue
-            except psycopg2.IntegrityError:
-                logging.warning("job %s, %s already exists, skipping record",
-                                job['job_company'], job['job_title'])
-                conn.rollback()
-                continue
-        try:
-            conn.close()
-        except:
-            pass
-
     def to_string(self):
         query_string = "Query: {}, {}, {}"
         query_string = query_string.format(self.query_term,
@@ -189,7 +154,7 @@ class IndeedQuery:
         logging.info("%s", self.url)
         logging.info("")
         for job in self.jobs:
-            for k, v in job.iteritems():
+            for k, v in job.items():
                 logging.info("%s %s", k, v)
             logging.info("")
         logging.info("")
@@ -202,17 +167,12 @@ def main():
                         datefmt='%m/%d/%Y %I:%M:%S %p',
                         level=logging.INFO)
 
-    con_str = "dbname='webscrape' user='allen'"
-    conn = psycopg2.connect(con_str)
-    cur = conn.cursor()
-    cur.execute("""SELECT query_term, city, state FROM searches""")
-    rows = cur.fetchall()
-    for r in rows:
-        row_Query = IndeedQuery(r[0], r[1], r[2])
-        row_Query.scrape()
-        row_Query.get_job_desc()
-        row_Query.keep_jobs()
-        row_Query.to_db()
+    ME_NY = IndeedQuery("Mechanical Engineer", "New York", "NY")
+    ME_NY.scrape()
+    ME_NY.get_job_desc()
+    ME_NY.save_query("ME_NY.pk")
+    # ME_NY = IndeedQuery.load_query("ME_NY.pk")
+    ME_NY.to_string()
 
     logging.info("python script scrape.py completed successfully")
 

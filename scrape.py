@@ -1,21 +1,8 @@
 # Allen Clark
-# scrape.py performs the following:
-# 1) Visit Indeed.com
-# 2) Queries for a job title and location (loc = city + state)
-# 3) Turns this html into an IndeedQuery Object
-# 4) IndeedQuery scrape method gets metadata from indeedpage
-# 5) IndeedQuery get_job_desc method gets job posting text
-# 6) IndeedQuery keep_jobs method deletes a job if we couldn't scrape the job
-# desc from the job posting website
-# 7) IndeedQuery to_db() puts the records in the webscrape postgres database
-# 8) Main method searches for all combinations of query_terms and cities
-#
-# Options:
-# add query terms by inserting into searchterms table in webscrape db
-# save or load queries as .pk pickle objects for faster testing
 #
 # TODO: priority high to low
 # Make all exceptions more robust
+# better get_job_desc method for external sources
 # make to_db method more robust, exceptions for internet access, ???
 # replace to_string with __str__ or __repr__ method
 # convert everything scraped to ascii? or handle in data analysis?
@@ -23,9 +10,8 @@
 # Load Modules
 import urllib2  # retrieve html
 import psycopg2  # postgresql database api
-from bs4 import BeautifulSoup  # parse html
-from bs4 import Comment  # parse html
-import cPickle as pickle  # save queries to file
+from bs4 import BeautifulSoup, Comment  # parse html
+import pickle  # save queries to file
 import datetime  # get date query was performed
 import logging  # write script progress to logfile.log
 
@@ -39,6 +25,11 @@ def tag_visible(element):
     if isinstance(element, Comment):
         return False
     return True
+
+def row_result(tag):
+    return tag.name == 'div' and tag.has_attr('class') \
+                             and ('row' and 'result' in tag['class']) \
+                             and tag.h2 is not None
 
 
 class IndeedQuery:
@@ -64,19 +55,21 @@ class IndeedQuery:
             response = urllib2.urlopen(self.url)
             html = response.read()
             soup = BeautifulSoup(html, "lxml")
-            postings = soup.find_all('div', {'class': '  row  result'})
+            postings = soup.find_all(row_result)
             self.jobs = [None] * len(postings)
-            logging.info("turned html into soup")
+            logging.info("found %s job postings", len(postings))
         except:
             logging.error("Cannot read html from indeed")
             return
         for (index, job) in enumerate(postings):
-            h2_elem = job.h2
-            job_href = h2_elem.a['href']
-            if "indeed.com/" not in job_href:
-                job_href = "https://www.indeed.com" + job_href
-            job_title = h2_elem.a['title']
-            logging.info("Fine till here")
+            try:
+                h2_elem = job.h2
+                job_href = h2_elem.a['href']
+                if "indeed.com/" not in job_href:
+                    job_href = "https://www.indeed.com" + job_href
+                job_title = h2_elem.a['title']
+            except: # parsing too leniant, found a tag with no row_result
+                continue
             try:
                 try:
                     job_company = job.span.a.string.strip()
@@ -213,6 +206,7 @@ def main():
         row_Query.get_job_desc()
         row_Query.keep_jobs()
         row_Query.to_db()
+    conn.close()
 
     logging.info("python script scrape.py completed successfully")
 

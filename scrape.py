@@ -103,7 +103,7 @@ class IndeedQuery:
                 soup = BeautifulSoup(html, "lxml")
                 logging.info("Beautiful soup created for %s at  %s",
                              job['job_title'], job['job_company'])
-            except urllib2.URLError:
+            except: # perhaps urllib2.URLError
                 job['job_desc'] = "NA"
                 logging.info("Beautiful soup failed for %s at  %s",
                              job['job_title'], job['job_company'])

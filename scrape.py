@@ -84,8 +84,8 @@ class IndeedQuery:
                                 'query_state': self.query_state,
                                 'job_url': job_href,
                                 'job_source': 'external',
-                                'job_title': job_title,
-                                'job_company': job_company,
+                                'job_title': job_title[:80], # varchar(80)
+                                'job_company': job_company[:80], # varchar(80)
                                 'job_desc': "NA",
                                 'date': now}
         logging.info("Successfully scraped indeed query page")
